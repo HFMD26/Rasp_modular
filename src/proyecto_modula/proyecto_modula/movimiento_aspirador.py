@@ -175,14 +175,16 @@ class CortadorSeguro(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    nodo = CortadorSeguro()
+    nodo = CerebroCortador()
     try:
         rclpy.spin(nodo)
     except KeyboardInterrupt:
-        pass
+        pass # Ignora el error al presionar Ctrl+C
     finally:
-        nodo.destroy_node()
-        rclpy.shutdown()
-
+        # Solo cierra si ROS sigue activo
+        if rclpy.ok():
+            nodo.destroy_node()
+            rclpy.shutdown()
+            
 if __name__ == '__main__':
     main()
