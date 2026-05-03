@@ -44,7 +44,7 @@ def generate_launch_description():
             package='tf2_ros',
             executable='static_transform_publisher',
             name='base_to_laser_tf',
-            arguments=['0.0', '0.0', '0.19', '0.0', '0.0', '0.0', 'base_link', 'base_laser'],
+            arguments=['0.0', '0.0', '0.19', '0.0', '0.0', '0.0', 'base_link', 'base_laser', '--publish-period', '50'],
             output='screen'
         ),
 
@@ -58,10 +58,10 @@ def generate_launch_description():
         ),
 
         # 6. RViz2
-        Node(
-            package='rviz2',
-            executable='rviz2',
-            name='rviz2',
-            output='screen'
-        )
+        #Node(
+           # package='rviz2',
+           # executable='rviz2',
+            #name='rviz2',
+            #output='screen'
+        #)
     ])
