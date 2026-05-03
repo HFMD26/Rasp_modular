@@ -9,13 +9,11 @@ def generate_launch_description():
     # 1. Definimos las rutas
     pkg_share = get_package_share_directory('proyecto_modula')
     nav2_dir = get_package_share_directory('nav2_bringup')
-    
-    # RUTA DE TU MAPA (Asegúrate de que el nombre coincida con el que guardaste)
     map_file_path = os.path.join(pkg_share, 'maps', 'mapa_simulacion.yaml')
 
     return LaunchDescription([
 
-        # 1. LiDAR (Mantenerlo para detectar obstáculos en tiempo real)
+        # 1. LiDAR 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory('ldlidar_stl_ros2'), 'launch', 'ld19.launch.py'))
@@ -47,7 +45,7 @@ def generate_launch_description():
             }.items()
         ),
 
-        # 5. EL CEREBRO DE LA ASPIRADORA (Tu nuevo script corregido)
+        # 5. EL CEREBRO DE LA ASPIRADORA
         Node(
             package='proyecto_modula',
             executable='movimiento_aspirador',
