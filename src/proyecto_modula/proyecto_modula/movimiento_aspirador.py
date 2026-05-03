@@ -56,23 +56,33 @@ class CortadorSeguro(Node):
         self.procesar_y_arrancar(msg)
 
     def es_punto_valido(self, x_world, y_world):
-        """Verifica que el punto esté dentro del mapa y lejos de bordes"""
         if self.map_msg is None: return False
-
+    
         res = self.map_msg.info.resolution
         origin_x = self.map_msg.info.origin.position.x
         origin_y = self.map_msg.info.origin.position.y
         width = self.map_msg.info.width
         height = self.map_msg.info.height
-
+    
+        # Convertir a coordenadas de celda
         grid_x = int((x_world - origin_x) / res)
         grid_y = int((y_world - origin_y) / res)
-
-        # PROTECCIÓN: No permitir puntos en el borde exacto (0 o width-1)
-        if 2 < grid_x < (width - 2) and 2 < grid_y < (height - 2):
-            index = grid_y * width + grid_x
-            return self.map_msg.data[index] == 0
-        return False
+    
+        # 1. Verificar límites estrictos del array
+        if grid_x < 0 or grid_x >= width or grid_y < 0 or grid_y >= height:
+            return False
+    
+        # 2. Verificar un área pequeña (3x3 celdas) alrededor del punto
+        # Esto asegura que el robot quepa y no esté pegado a una pared desconocida
+        for i in range(-1, 2):
+            for j in range(-1, 2):
+                nx, ny = grid_x + i, grid_y + j
+                if 0 <= nx < width and 0 <= ny < height:
+                    index = ny * width + nx
+                    # Si alguna celda cerca es pared (100) o desconocida (-1 o 255), no es válido
+                    if self.map_msg.data[index] != 0:
+                        return False
+        return True
 
     def procesar_y_arrancar(self, msg):
         width = msg.info.width
