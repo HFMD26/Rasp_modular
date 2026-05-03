@@ -118,26 +118,28 @@ class CortadorSeguro(Node):
     def calcular_rutas(self):
         y_actual = self.y_min
         ir_derecha = True
-
+        paso_x = 0.30  # Distancia entre puntos de la misma línea (30cm)
+    
         while y_actual <= self.y_max:
-            if ir_derecha:
-                puntos_linea = [(self.x_min, y_actual, 0.0), (self.x_max, y_actual, 0.0)]
-            else:
-                puntos_linea = [(self.x_max, y_actual, 3.14), (self.x_min, y_actual, 3.14)]
-
-            for (x, y, yaw) in puntos_linea:
-                if self.es_punto_valido(x, y):
-                    self.rutas.append((x, y, yaw))
-                else:
-                    self.get_logger().warn(f"Punto ({x:.2f}, {y:.2f}) fuera de límites, saltando.")
-
+            # Generar una lista de puntos a lo largo de la línea X
+            x_puntos = []
+            curr_x = self.x_min
+            while curr_x <= self.x_max:
+                x_puntos.append(curr_x)
+                curr_x += paso_x
+            
+            # Si vamos de regreso, invertimos la lista para el zigzag
+            if not ir_derecha:
+                x_puntos.reverse()
+    
+            for x in x_puntos:
+                yaw = 0.0 if ir_derecha else 3.14
+                if self.es_punto_valido(x, y_actual):
+                    self.rutas.append((x, y_actual, yaw))
+            
             y_actual += self.ancho_corte
             ir_derecha = not ir_derecha
-
-        if self.rutas:
-            self.get_logger().info(f"Iniciando con {len(self.rutas)} puntos.")
-            self.ir_al_siguiente_punto()
-
+        
     def ir_al_siguiente_punto(self):
         if self.punto_actual >= len(self.rutas):
             self.get_logger().info("¡Misión cumplida!")
