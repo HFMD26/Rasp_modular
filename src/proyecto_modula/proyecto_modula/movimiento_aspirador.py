@@ -173,18 +173,18 @@ class CortadorSeguro(Node):
         self.punto_actual += 1
         self.ir_al_siguiente_punto()
 
-def main(args=None):
-    rclpy.init(args=args)
-    nodo = CerebroCortador()
-    try:
-        rclpy.spin(nodo)
-    except KeyboardInterrupt:
-        pass # Ignora el error al presionar Ctrl+C
-    finally:
-        # Solo cierra si ROS sigue activo
-        if rclpy.ok():
-            nodo.destroy_node()
-            rclpy.shutdown()
+    def main(args=None):
+        rclpy.init(args=args)
+        nodo = CortadorSeguro()  # <--- Asegúrate que así se llame la clase arriba
+        try:
+            rclpy.spin(nodo)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            # Esto evita el error de "shutdown already called" que vimos antes
+            if rclpy.ok():
+                nodo.destroy_node()
+                rclpy.shutdown()
             
 if __name__ == '__main__':
     main()
