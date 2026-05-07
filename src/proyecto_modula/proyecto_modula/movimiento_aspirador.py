@@ -21,19 +21,19 @@ class CortadorSeguro(Node):
     def __init__(self):
         super().__init__('cerebro_cortador_final')
         
-        # --- PARÁMETROS DEL ROBOT ---
+        # --- CONFIGURACIÓN ---
         self.margen_seguridad = 0.55
         self.ancho_corte = 0.40
         self.paso_puntos = 0.60
+        self.tiempo_limite = 30.0  # <--- TUS 30 SEGUNDOS
         
-        # --- ESTADO INTERNO ---
         self.map_msg = None
         self.rutas = []
         self.punto_actual = 0
         self.goal_handle = None
         self.inicio_tiempo_punto = None
         self.esperando_meta = False  
-        self.limpiando_sistema = False # NUEVA BANDERA DE SEGURIDAD
+        self.limpiando_sistema = False 
         
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
 
@@ -41,9 +41,9 @@ class CortadorSeguro(Node):
                              durability=DurabilityPolicy.TRANSIENT_LOCAL, depth=1)
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, qos_map)
         
-        # Watchdog: Revisa el progreso cada 2 segundos
-        self.timer_revision = self.create_timer(2.0, self.revisar_progreso)
-        self.get_logger().info("Iniciando Cortador Seguro con protección de Status 6...")
+        # Watchdog: Revisa el cronómetro cada segundo
+        self.timer_revision = self.create_timer(1.0, self.revisar_progreso)
+        self.get_logger().info("Iniciando con 30s por punto y protección anti-Estatus 6.")
 
     def map_callback(self, msg):
         if self.map_msg is not None: return
@@ -96,12 +96,7 @@ class CortadorSeguro(Node):
             hacia_derecha = not hacia_derecha
 
     def ir_al_siguiente_punto(self):
-        if self.punto_actual >= len(self.rutas):
-            self.get_logger().info("¡COBERTURA COMPLETADA!")
-            return
-
-        # No permitir enviar si estamos en medio de una limpieza o ya hay una meta
-        if self.esperando_meta or self.limpiando_sistema:
+        if self.punto_actual >= len(self.rutas) or self.limpiando_sistema:
             return
 
         x, y, yaw = self.rutas[self.punto_actual]
@@ -115,7 +110,7 @@ class CortadorSeguro(Node):
         goal_msg.pose.pose.position.y = float(y)
         goal_msg.pose.pose.orientation = euler_a_quaternion(yaw)
         
-        self.get_logger().info(f"==> Punto {self.punto_actual+1}/{len(self.rutas)}...")
+        self.get_logger().info(f"==> Iniciando Punto {self.punto_actual+1}/{len(self.rutas)} (30s de tiempo límite)")
         
         send_goal_future = self.nav_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
@@ -123,7 +118,6 @@ class CortadorSeguro(Node):
     def goal_response_callback(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error("Nav2 rechazó el punto.")
             self.esperando_meta = False
             self.proximo_punto()
             return
@@ -131,12 +125,7 @@ class CortadorSeguro(Node):
         self.goal_handle.get_result_async().add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
-        if not self.esperando_meta:
-            return
-        
-        status = future.result().status
-        self.get_logger().info(f"Resultado Punto {self.punto_actual+1}: Status {status}")
-        
+        if not self.esperando_meta: return
         self.esperando_meta = False
         self.proximo_punto()
 
@@ -146,28 +135,23 @@ class CortadorSeguro(Node):
             
         transcurrido = self.get_clock().now() - self.inicio_tiempo_punto
         
-        if transcurrido > Duration(seconds=45):
-            self.get_logger().warn(f"TIMEOUT en Punto {self.punto_actual+1}")
+        if transcurrido > Duration(seconds=int(self.tiempo_limite)):
+            self.get_logger().warn(f"TIMEOUT: {self.tiempo_limite}s agotados en Punto {self.punto_actual+1}. Saltando...")
             self.esperando_meta = False 
-            self.inicio_tiempo_punto = None
-            
-            if self.goal_handle is not None:
+            if self.goal_handle:
                 self.goal_handle.cancel_goal_async()
-            
             self.proximo_punto()
 
     def proximo_punto(self):
-        # Activamos limpieza para que ir_al_siguiente_punto no pueda ser llamado por error
         self.limpiando_sistema = True
         self.punto_actual += 1
         self.goal_handle = None
-        
-        # Pausa obligatoria de 3 segundos para que Nav2 se estabilice
-        self.timer_pausa = self.create_timer(3.0, self.espera_y_continua)
+        # Pausa obligatoria para evitar el Estatus 6 (CANCELLED)
+        self.timer_pausa = self.create_timer(2.0, self.espera_y_continua)
 
     def espera_y_continua(self):
         self.timer_pausa.cancel()
-        self.limpiando_sistema = False # Liberamos el sistema
+        self.limpiando_sistema = False 
         self.ir_al_siguiente_punto()
 
 def main(args=None):
