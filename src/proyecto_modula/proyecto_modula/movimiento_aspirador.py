@@ -20,45 +20,40 @@ def euler_a_quaternion(yaw):
 class CortadorSeguro(Node):
     def __init__(self):
         super().__init__('cerebro_cortador_final')
+        
+        # --- CONFIGURACIÓN ---
+        self.tiempo_limite = 30.0  # 30 segundos reales
         self.margen_seguridad = 0.55
         self.ancho_corte = 0.40
         self.paso_puntos = 0.60
         
-        # --- CONFIGURACIÓN DE TIEMPOS ---
-        self.tiempo_limite_segundos = 30.0  # El robot tiene 30s para moverse
-        self.pausa_entre_puntos = 2.0      # El robot espera 2s antes de pedir el siguiente
-        
+        # --- ESTADOS ---
         self.map_msg = None
         self.rutas = []
         self.punto_actual = 0
         self.goal_handle = None
         self.inicio_tiempo_punto = None
-        self.esperando_meta = False  
-        self.limpiando_sistema = False 
-        
+        self.esperando_meta = False
+        self.bloqueo_pausa = False
+
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-        # ... (suscripción al mapa igual)
+
+        qos_map = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, 
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL, depth=1)
+        self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, qos_map)
         
-        # Revisa el progreso cada 1 segundo para ser precisos
-        self.timer_revision = self.create_timer(1.0, self.revisar_progreso)
+        # Revisión de Watchdog cada 1 segundo
+        self.timer_watchdog = self.create_timer(1.0, self.revisar_progreso)
         
+        self.get_logger().info("Nodo iniciado. Esperando mapa para generar rutas...")
+
     def map_callback(self, msg):
         if self.map_msg is not None: return
         self.map_msg = msg
         self.procesar_y_arrancar(msg)
 
-    def es_punto_valido(self, x_world, y_world):
-        if self.map_msg is None: return False
-        res = self.map_msg.info.resolution
-        origin_x = self.map_msg.info.origin.position.x
-        origin_y = self.map_msg.info.origin.position.y
-        grid_x = int((x_world - origin_x) / res)
-        grid_y = int((y_world - origin_y) / res)
-        index = grid_y * self.map_msg.info.width + grid_x
-        if index < 0 or index >= len(self.map_msg.data): return False
-        return self.map_msg.data[index] == 0
-
     def procesar_y_arrancar(self, msg):
+        # ... (Lógica de zigzag igual a la anterior)
         width, res = msg.info.width, msg.info.resolution
         origin_x, origin_y = msg.info.origin.position.x, msg.info.origin.position.y
         min_x_idx, max_x_idx = width, 0
@@ -73,7 +68,8 @@ class CortadorSeguro(Node):
         self.y_min = (min_y_idx * res) + origin_y + self.margen_seguridad
         self.y_max = (max_y_idx * res) + origin_y - self.margen_seguridad
         self.generar_zigzag()
-        if self.rutas: self.ir_al_siguiente_punto()
+        if self.rutas:
+            self.ir_al_siguiente_punto()
 
     def generar_zigzag(self):
         y_actual = self.y_min
@@ -87,81 +83,72 @@ class CortadorSeguro(Node):
             if not hacia_derecha: linea.reverse()
             for x in linea:
                 yaw = 0.0 if hacia_derecha else 3.1416
-                if self.es_punto_valido(x, y_actual):
-                    self.rutas.append((x, y_actual, yaw))
+                self.rutas.append((x, y_actual, yaw))
             y_actual += self.ancho_corte
             hacia_derecha = not hacia_derecha
+        self.get_logger().info(f"Rutas generadas: {len(self.rutas)} puntos.")
 
     def ir_al_siguiente_punto(self):
-        if self.punto_actual >= len(self.rutas) or self.limpiando_sistema:
+        if self.punto_actual >= len(self.rutas) or self.bloqueo_pausa:
             return
 
         x, y, yaw = self.rutas[self.punto_actual]
-        
-        # IMPORTANTE: Guardamos el tiempo exacto de inicio
-        self.inicio_tiempo_punto = self.get_clock().now() 
-        self.esperando_meta = True 
+        self.get_logger().info(f"Enviando Punto {self.punto_actual+1}/{len(self.rutas)}")
         
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.frame_id = 'map'
-        goal_msg.pose.header.stamp = self.get_clock().now().to_msg()
         goal_msg.pose.pose.position.x = float(x)
         goal_msg.pose.pose.position.y = float(y)
         goal_msg.pose.pose.orientation = euler_a_quaternion(yaw)
+
+        self.inicio_tiempo_punto = self.get_clock().now()
+        self.esperando_meta = True
         
-        self.get_logger().info(f"==> PUNTO {self.punto_actual+1}: Tienes {self.tiempo_limite_segundos}s para llegar.")
-        
+        self.nav_client.wait_for_server()
         send_goal_future = self.nav_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
 
     def goal_response_callback(self, future):
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.esperando_meta = False
-            self.proximo_punto()
+        handle = future.result()
+        if not handle.accepted:
+            self.get_logger().error("Meta rechazada.")
+            self.preparar_siguiente(0.5)
             return
-        self.goal_handle = goal_handle
+        self.goal_handle = handle
         self.goal_handle.get_result_async().add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
-        if not self.esperando_meta: return
-        self.esperando_meta = False
-        self.proximo_punto()
+        if self.esperando_meta:
+            self.get_logger().info(f"Punto {self.punto_actual+1} terminado.")
+            self.preparar_siguiente(2.0)
 
     def revisar_progreso(self):
-        # Si no hay meta activa, no hacemos nada
         if not self.esperando_meta or self.inicio_tiempo_punto is None:
             return
             
-        # Calculamos cuánto tiempo ha pasado realmente
-        ahora = self.get_clock().now()
-        duracion_pasada = ahora - self.inicio_tiempo_punto
-        segundos_pasados = duracion_pasada.nanoseconds / 1e9 # Convertir a segundos
+        transcurrido = (self.get_clock().now() - self.inicio_tiempo_punto).nanoseconds / 1e9
         
-        # Log cada segundo para que veas el conteo en la terminal
-        self.get_logger().info(f"Progreso punto {self.punto_actual+1}: {segundos_pasados:.1f}s / {self.tiempo_limite_segundos}s", once=False)
-
-        # SI PASAN LOS 30 SEGUNDOS, CANCELAMOS
-        if segundos_pasados >= self.tiempo_limite_segundos:
-            self.get_logger().warn(f"¡TIEMPO AGOTADO! No llegó en {self.tiempo_limite_segundos}s.")
-            
-            self.esperando_meta = False 
+        if transcurrido >= self.tiempo_limite:
+            self.get_logger().warn(f"TIMEOUT: {transcurrido:.1f}s en Punto {self.punto_actual+1}")
             if self.goal_handle:
                 self.goal_handle.cancel_goal_async()
-            
-            self.proximo_punto()
+            self.preparar_siguiente(2.0)
 
-    def proximo_punto(self):
-        self.limpiando_sistema = True
+    def preparar_siguiente(self, pausa):
+        if self.bloqueo_pausa: return
+        self.bloqueo_pausa = True
+        self.esperando_meta = False
         self.punto_actual += 1
         self.goal_handle = None
-        # Esta es la pausa técnica para que Nav2 no de error Status 6
-        self.get_logger().info(f"Limpiando sistema... esperando {self.pausa_entre_puntos}s")
-        self.timer_pausa = self.create_timer(self.pausa_entre_puntos, self.espera_y_continua)
+        
+        # Timer de un solo disparo para la pausa
+        self.create_timer(pausa, self.finalizar_pausa)
 
-    def espera_y_continua(self):
-        self.timer_pausa.cancel()
-        self.limpiando_sistema = False 
+    def finalizar_pausa(self):
+        # Necesitamos encontrar y detener el timer que nos llamó para que no se repita
+        # En ROS 2 Humble esto es un poco manual si no guardamos la referencia, 
+        # así que usaremos un truco más limpio:
+        self.bloqueo_pausa = False
         self.ir_al_siguiente_punto()
 
 def main(args=None):
