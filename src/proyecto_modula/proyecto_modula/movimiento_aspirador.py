@@ -32,6 +32,8 @@ class CortadorSeguro(Node):
         self.punto_actual = 0
         self.goal_handle = None
         self.inicio_tiempo_punto = None
+        self.esperando_meta = False 
+        self.goal_handle = None    
         
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
 
@@ -149,8 +151,6 @@ class CortadorSeguro(Node):
             return
             
         x, y, yaw = self.rutas[self.punto_actual]
-        
-        # --- NUEVO: Control de estado para evitar cascada ---
         self.esperando_meta = True 
         self.inicio_tiempo_punto = self.get_clock().now()
         
@@ -163,38 +163,33 @@ class CortadorSeguro(Node):
         
         self.get_logger().info(f"Punto {self.punto_actual + 1}/{len(self.rutas)} -> ({x:.2f}, {y:.2f})")
         
+        # Esta línea busca la función de abajo
         send_goal_future = self.nav_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
 
-    def revisar_progreso(self):
-        if self.inicio_tiempo_punto is None or not self.esperando_meta:
-            return
-            
-        tiempo_transcurrido = self.get_clock().now() - self.inicio_tiempo_punto
-        if tiempo_transcurrido > Duration(seconds=45): # Bajamos a 45s para que sea más dinámico
-            self.get_logger().warn("¡TIMEOUT! Saltando punto por tiempo...")
-            
-            # Cambiamos el estado ANTES de saltar para romper la cascada
-            self.esperando_meta = False 
-            
-            if self.goal_handle:
-                self.nav_client.cancel_goal_async(self.goal_handle)
-            
+    def goal_response_callback(self, future):
+        """Maneja si Nav2 aceptó o rechazó la meta"""
+        self.goal_handle = future.result()
+        if not self.goal_handle.accepted:
+            self.get_logger().error("Meta rechazada por Nav2.")
+            self.esperando_meta = False
             self.proximo_punto()
+            return
+        
+        # Si la acepta, esperamos el resultado final (llegó o falló)
+        self.goal_handle.get_result_async().add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
-        # Solo avanzamos si el timeout no lo hizo primero
+        """Se ejecuta cuando el robot termina el movimiento"""
         if self.esperando_meta:
             self.esperando_meta = False
             self.proximo_punto()
 
     def proximo_punto(self):
-        # Limpiamos el handle de la meta anterior
-        self.goal_handle = None
+        """Incrementa el contador y salta al siguiente"""
         self.punto_actual += 1
-        # Pequeña pausa de 0.5s para que la terminal no se sature
         self.ir_al_siguiente_punto()
-
+        
 def main(args=None):
     rclpy.init(args=args)
     nodo = CortadorSeguro()
