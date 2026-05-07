@@ -32,7 +32,7 @@ class CortadorSeguro(Node):
         self.punto_actual = 0
         self.goal_handle = None
         self.inicio_tiempo_punto = None
-        self.esperando_meta = False  # CANDADO DE SEGURIDAD
+        self.esperando_meta = False  
         
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
 
@@ -106,15 +106,12 @@ class CortadorSeguro(Node):
     def ir_al_siguiente_punto(self):
         if self.punto_actual >= len(self.rutas):
             self.get_logger().info("¡TRABAJO TERMINADO!")
-            self.esperando_meta = False
             return
             
         x, y, yaw = self.rutas[self.punto_actual]
         
-        # --- RESET TOTAL ---
         self.esperando_meta = True 
         self.goal_handle = None 
-        # Reiniciamos el reloj exactamente en este instante
         self.inicio_tiempo_punto = self.get_clock().now() 
         
         goal_msg = NavigateToPose.Goal()
@@ -124,22 +121,29 @@ class CortadorSeguro(Node):
         goal_msg.pose.pose.position.y = float(y)
         goal_msg.pose.pose.orientation = euler_a_quaternion(yaw)
         
-        self.get_logger().info(f"Iniciando Punto {self.punto_actual+1}/{len(self.rutas)} con 45s de margen...")
+        self.get_logger().info(f"Yendo a punto {self.punto_actual+1}/{len(self.rutas)}...")
         
         send_goal_future = self.nav_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
 
+    # --- ESTA ES LA FUNCIÓN QUE TE FALTABA ---
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().error("Meta rechazada por Nav2")
+            self.proximo_punto()
+            return
+        self.goal_handle = goal_handle
+        self.goal_handle.get_result_async().add_done_callback(self.get_result_callback)
+
     def get_result_callback(self, future):
-        # LA CLAVE: Si el timeout ya puso esto en False, ignoramos cualquier
-        # mensaje viejo que llegue de Nav2.
         if not self.esperando_meta:
             return
             
         status = future.result().status
-        # Solo si Nav2 confirma que llegó (SUCCEEDED = 4)
-        if status == 4:
-            self.get_logger().info(f"¡Punto {self.punto_actual+1} alcanzado con éxito!")
-        
+        if status == 4: # Status 4 significa ÉXITO
+            self.get_logger().info("Punto alcanzado!")
+            
         self.esperando_meta = False
         self.proximo_punto()
 
@@ -150,23 +154,17 @@ class CortadorSeguro(Node):
         transcurrido = self.get_clock().now() - self.inicio_tiempo_punto
         
         if transcurrido > Duration(seconds=45):
-            self.get_logger().warn(f"¡TIMEOUT! El punto {self.punto_actual+1} falló. Intentando el siguiente...")
-            
-            # BLOQUEO DE SEGURIDAD: Al poner esto en False, 
-            # get_result_callback ya no podrá disparar el siguiente punto.
+            self.get_logger().warn(f"TIMEOUT. Saltando punto {self.punto_actual+1}")
             self.esperando_meta = False 
             self.inicio_tiempo_punto = None
             
             if self.goal_handle is not None:
                 self.goal_handle.cancel_goal_async()
             
-            # Forzamos una pequeña espera antes de proximo_punto para limpiar el buffer
             self.proximo_punto()
 
     def proximo_punto(self):
         self.punto_actual += 1
-        # Esta pequeña pausa de 0.5s es vital para que Nav2 termine de cancelar
-        # la meta anterior antes de recibir la nueva.
         time.sleep(0.5) 
         self.ir_al_siguiente_punto()
 
