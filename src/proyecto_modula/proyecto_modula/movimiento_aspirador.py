@@ -63,7 +63,7 @@ class CortadorSeguro(Node):
         if self.map_msg is not None: return
         self.get_logger().info("2/4. ¡Mapa recibido!")
         self.map_msg = msg
-        if not self.nav_client.wait_for_server(timeout_sec=10.0):
+        if not self.nav_client.wait_for_server(timeout_sec=60.0):
             self.get_logger().error("Nav2 no responde.")
             return
         self.procesar_y_arrancar(msg)
