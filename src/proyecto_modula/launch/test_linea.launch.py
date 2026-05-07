@@ -7,7 +7,7 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 def generate_launch_description():
     pkg_dir = get_package_share_directory('proyecto_modula') # Cambia por tu nombre de paquete
-    map_file = os.path.join(pkg_dir, 'maps', 'mapa_proyecto.yaml')
+    map_file = os.path.join(pkg_dir, 'maps', 'mapa_simulacion.yaml')
 
     return LaunchDescription([
         # 1. Servidor del Mapa
