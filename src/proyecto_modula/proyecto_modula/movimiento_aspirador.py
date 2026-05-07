@@ -21,8 +21,6 @@ def euler_a_quaternion(yaw):
 class CortadorSeguro(Node):
     def __init__(self):
         super().__init__('cerebro_cortador_final')
-        
-        # --- CONFIGURACIÓN (Robot 75.5cm x 46cm) ---
         self.margen_seguridad = 0.55
         self.ancho_corte = 0.40
         self.paso_puntos = 0.60
@@ -36,17 +34,13 @@ class CortadorSeguro(Node):
         
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
 
-        qos_map = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-            depth=1
-        )
+        qos_map = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, 
+                             durability=DurabilityPolicy.TRANSIENT_LOCAL, depth=1)
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, qos_map)
         
-        # Timer de revisión cada 2 segundos
+        # Timer de revisión (Watchdog)
         self.timer_revision = self.create_timer(2.0, self.revisar_progreso)
-        
-        self.get_logger().info("Sistema iniciado. Esperando mapa...")
+        self.get_logger().info("Sistema iniciado.")
 
     def map_callback(self, msg):
         if self.map_msg is not None: return
@@ -105,13 +99,15 @@ class CortadorSeguro(Node):
 
     def ir_al_siguiente_punto(self):
         if self.punto_actual >= len(self.rutas):
-            self.get_logger().info("¡TRABAJO TERMINADO!")
+            self.get_logger().info("¡Misión terminada!")
             return
-            
+
+        # --- BLOQUEO PARA EVITAR CASCADA ---
+        if self.esperando_meta:
+            return
+
         x, y, yaw = self.rutas[self.punto_actual]
-        
         self.esperando_meta = True 
-        self.goal_handle = None 
         self.inicio_tiempo_punto = self.get_clock().now() 
         
         goal_msg = NavigateToPose.Goal()
@@ -121,30 +117,33 @@ class CortadorSeguro(Node):
         goal_msg.pose.pose.position.y = float(y)
         goal_msg.pose.pose.orientation = euler_a_quaternion(yaw)
         
-        self.get_logger().info(f"Yendo a punto {self.punto_actual+1}/{len(self.rutas)}...")
+        self.get_logger().info(f"==> Iniciando Punto {self.punto_actual+1}/{len(self.rutas)}")
         
         send_goal_future = self.nav_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
 
-    # --- ESTA ES LA FUNCIÓN QUE TE FALTABA ---
     def goal_response_callback(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error("Meta rechazada por Nav2")
+            self.get_logger().error("Punto rechazado. Saltando...")
+            self.esperando_meta = False # Liberamos antes de saltar
             self.proximo_punto()
             return
         self.goal_handle = goal_handle
         self.goal_handle.get_result_async().add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
+        # Si el timeout ya liberó la meta, ignoramos este callback viejo
         if not self.esperando_meta:
             return
             
         status = future.result().status
-        if status == 4: # Status 4 significa ÉXITO
-            self.get_logger().info("Punto alcanzado!")
+        if status == 4: # SUCCEEDED
+            self.get_logger().info(f"Punto {self.punto_actual+1} COMPLETADO.")
+        else:
+            self.get_logger().warn(f"Punto {self.punto_actual+1} terminó con status: {status}")
             
-        self.esperando_meta = False
+        self.esperando_meta = False # LIBERAMOS EL CANDADO
         self.proximo_punto()
 
     def revisar_progreso(self):
@@ -154,18 +153,29 @@ class CortadorSeguro(Node):
         transcurrido = self.get_clock().now() - self.inicio_tiempo_punto
         
         if transcurrido > Duration(seconds=45):
-            self.get_logger().warn(f"TIMEOUT. Saltando punto {self.punto_actual+1}")
+            self.get_logger().warn(f"!!! TIMEOUT en Punto {self.punto_actual+1} !!!")
+            
+            # 1. Cerramos el candado inmediatamente para que get_result_callback sea ignorado
             self.esperando_meta = False 
             self.inicio_tiempo_punto = None
             
+            # 2. Cancelamos la meta actual
             if self.goal_handle is not None:
+                self.get_logger().info("Cancelando movimiento actual...")
                 self.goal_handle.cancel_goal_async()
             
+            # 3. Saltamos al siguiente punto
             self.proximo_punto()
 
     def proximo_punto(self):
         self.punto_actual += 1
-        time.sleep(0.5) 
+        # IMPORTANTE: No llamamos a ir_al_siguiente_punto inmediatamente.
+        # Creamos un timer de un solo disparo para dar 1 segundo de "limpieza" en Nav2.
+        self.create_timer(1.0, self.timer_pausa_callback)
+
+    def timer_pausa_callback(self):
+        # Destruimos este timer temporal para que no se repita
+        # (esta es una técnica para hacer un sleep asíncrono en ROS2)
         self.ir_al_siguiente_punto()
 
 def main(args=None):
