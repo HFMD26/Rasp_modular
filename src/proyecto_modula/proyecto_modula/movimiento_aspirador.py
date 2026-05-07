@@ -21,6 +21,8 @@ def euler_a_quaternion(yaw):
 class CortadorSeguro(Node):
     def __init__(self):
         super().__init__('cerebro_cortador_final')
+        
+        # Configuración
         self.margen_seguridad = 0.55
         self.ancho_corte = 0.40
         self.paso_puntos = 0.60
@@ -38,9 +40,9 @@ class CortadorSeguro(Node):
                              durability=DurabilityPolicy.TRANSIENT_LOCAL, depth=1)
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, qos_map)
         
-        # Timer de revisión (Watchdog)
+        # Watchdog cada 2 segundos
         self.timer_revision = self.create_timer(2.0, self.revisar_progreso)
-        self.get_logger().info("Sistema iniciado.")
+        self.get_logger().info("Nodo de Cobertura Activo.")
 
     def map_callback(self, msg):
         if self.map_msg is not None: return
@@ -55,14 +57,13 @@ class CortadorSeguro(Node):
         grid_x = int((x_world - origin_x) / res)
         grid_y = int((y_world - origin_y) / res)
         index = grid_y * self.map_msg.info.width + grid_x
+        if index < 0 or index >= len(self.map_msg.data): return False
         return self.map_msg.data[index] == 0
 
     def procesar_y_arrancar(self, msg):
-        width = msg.info.width
-        res = msg.info.resolution
-        origin_x = msg.info.origin.position.x
-        origin_y = msg.info.origin.position.y
-        
+        # ... (lógica de zigzag idéntica a la anterior)
+        width, res = msg.info.width, msg.info.resolution
+        origin_x, origin_y = msg.info.origin.position.x, msg.info.origin.position.y
         min_x_idx, max_x_idx = width, 0
         min_y_idx, max_y_idx = msg.info.height, 0
         for i, val in enumerate(msg.data):
@@ -70,15 +71,12 @@ class CortadorSeguro(Node):
                 y, x = divmod(i, width)
                 min_x_idx, max_x_idx = min(min_x_idx, x), max(max_x_idx, x)
                 min_y_idx, max_y_idx = min(min_y_idx, y), max(max_y_idx, y)
-
         self.x_min = (min_x_idx * res) + origin_x + self.margen_seguridad
         self.x_max = (max_x_idx * res) + origin_x - self.margen_seguridad
         self.y_min = (min_y_idx * res) + origin_y + self.margen_seguridad
         self.y_max = (max_y_idx * res) + origin_y - self.margen_seguridad
-
         self.generar_zigzag()
-        if self.rutas:
-            self.ir_al_siguiente_punto()
+        if self.rutas: self.ir_al_siguiente_punto()
 
     def generar_zigzag(self):
         y_actual = self.y_min
@@ -99,11 +97,7 @@ class CortadorSeguro(Node):
 
     def ir_al_siguiente_punto(self):
         if self.punto_actual >= len(self.rutas):
-            self.get_logger().info("¡Misión terminada!")
-            return
-
-        # --- BLOQUEO PARA EVITAR CASCADA ---
-        if self.esperando_meta:
+            self.get_logger().info("¡MISIÓN COMPLETADA!")
             return
 
         x, y, yaw = self.rutas[self.punto_actual]
@@ -125,25 +119,22 @@ class CortadorSeguro(Node):
     def goal_response_callback(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().error("Punto rechazado. Saltando...")
-            self.esperando_meta = False # Liberamos antes de saltar
+            self.get_logger().error("Meta rechazada.")
+            self.esperando_meta = False
             self.proximo_punto()
             return
         self.goal_handle = goal_handle
         self.goal_handle.get_result_async().add_done_callback(self.get_result_callback)
 
     def get_result_callback(self, future):
-        # Si el timeout ya liberó la meta, ignoramos este callback viejo
+        # Bloqueamos cualquier callback si el timeout ya ocurrió
         if not self.esperando_meta:
             return
             
         status = future.result().status
-        if status == 4: # SUCCEEDED
-            self.get_logger().info(f"Punto {self.punto_actual+1} COMPLETADO.")
-        else:
-            self.get_logger().warn(f"Punto {self.punto_actual+1} terminó con status: {status}")
-            
-        self.esperando_meta = False # LIBERAMOS EL CANDADO
+        # Solo avanzamos si terminó (sea éxito o fallo, para no trabarse)
+        self.get_logger().info(f"Punto {self.punto_actual+1} finalizado con status: {status}")
+        self.esperando_meta = False
         self.proximo_punto()
 
     def revisar_progreso(self):
@@ -155,27 +146,24 @@ class CortadorSeguro(Node):
         if transcurrido > Duration(seconds=45):
             self.get_logger().warn(f"!!! TIMEOUT en Punto {self.punto_actual+1} !!!")
             
-            # 1. Cerramos el candado inmediatamente para que get_result_callback sea ignorado
+            # 1. Reset de estado
             self.esperando_meta = False 
             self.inicio_tiempo_punto = None
             
-            # 2. Cancelamos la meta actual
+            # 2. Cancelación manual
             if self.goal_handle is not None:
-                self.get_logger().info("Cancelando movimiento actual...")
                 self.goal_handle.cancel_goal_async()
             
-            # 3. Saltamos al siguiente punto
             self.proximo_punto()
 
     def proximo_punto(self):
         self.punto_actual += 1
-        # IMPORTANTE: No llamamos a ir_al_siguiente_punto inmediatamente.
-        # Creamos un timer de un solo disparo para dar 1 segundo de "limpieza" en Nav2.
-        self.create_timer(1.0, self.timer_pausa_callback)
+        # IMPORTANTE: Aumentamos el tiempo de espera a 2 segundos para 
+        # asegurar que Nav2 limpie la meta anterior (Status 6).
+        self.timer_pausa = self.create_timer(2.0, self.espera_y_continua)
 
-    def timer_pausa_callback(self):
-        # Destruimos este timer temporal para que no se repita
-        # (esta es una técnica para hacer un sleep asíncrono en ROS2)
+    def espera_y_continua(self):
+        self.timer_pausa.cancel()
         self.ir_al_siguiente_punto()
 
 def main(args=None):
