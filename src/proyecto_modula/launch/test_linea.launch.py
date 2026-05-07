@@ -26,7 +26,7 @@ def generate_launch_description():
         # 2. Tu script de movimiento
         Node(
             package='proyecto_modula',
-            executable='linea_recta.py', # Asegúrate que el archivo tenga permisos de ejecución
+            executable='linea_recta', # Asegúrate que el archivo tenga permisos de ejecución
             output='screen'
         )
     ])
