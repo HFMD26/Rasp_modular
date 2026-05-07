@@ -190,9 +190,11 @@ class CortadorSeguro(Node):
             self.esperando_meta = False
             self.inicio_tiempo_punto = None 
             
-            # 2. Intentar cancelar en Nav2
-            if self.goal_handle:
-                self.nav_client.cancel_goal_async(self.goal_handle)
+            # 2. Cancelar la meta usando el goal_handle correctamente
+            if self.goal_handle is not None:
+                self.get_logger().info("Cancelando meta actual en Nav2...")
+                # EL CAMBIO ESTÁ AQUÍ:
+                self.goal_handle.cancel_goal_async()
             
             # 3. Moverse al siguiente
             self.proximo_punto()
