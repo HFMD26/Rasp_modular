@@ -106,13 +106,15 @@ class CortadorSeguro(Node):
     def ir_al_siguiente_punto(self):
         if self.punto_actual >= len(self.rutas):
             self.get_logger().info("¡TRABAJO TERMINADO!")
+            self.esperando_meta = False
             return
             
         x, y, yaw = self.rutas[self.punto_actual]
         
-        # --- RESET TOTAL DE ESTADO PARA EL NUEVO PUNTO ---
+        # --- RESET TOTAL ---
         self.esperando_meta = True 
-        self.goal_handle = None # Limpiamos el handle anterior
+        self.goal_handle = None 
+        # Reiniciamos el reloj exactamente en este instante
         self.inicio_tiempo_punto = self.get_clock().now() 
         
         goal_msg = NavigateToPose.Goal()
@@ -122,53 +124,50 @@ class CortadorSeguro(Node):
         goal_msg.pose.pose.position.y = float(y)
         goal_msg.pose.pose.orientation = euler_a_quaternion(yaw)
         
-        self.get_logger().info(f"Yendo a punto {self.punto_actual+1}/{len(self.rutas)}...")
+        self.get_logger().info(f"Iniciando Punto {self.punto_actual+1}/{len(self.rutas)} con 45s de margen...")
         
         send_goal_future = self.nav_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
 
-    def goal_response_callback(self, future):
-        goal_handle = future.result()
-        if not goal_handle.accepted:
-            self.proximo_punto()
-            return
-        self.goal_handle = goal_handle
-        self.goal_handle.get_result_async().add_done_callback(self.get_result_callback)
-
     def get_result_callback(self, future):
-        # Si ya no estamos esperando (porque el timeout actuó antes), ignoramos este resultado
+        # LA CLAVE: Si el timeout ya puso esto en False, ignoramos cualquier
+        # mensaje viejo que llegue de Nav2.
         if not self.esperando_meta:
             return
             
-        self.get_logger().info("¡Punto alcanzado!")
+        status = future.result().status
+        # Solo si Nav2 confirma que llegó (SUCCEEDED = 4)
+        if status == 4:
+            self.get_logger().info(f"¡Punto {self.punto_actual+1} alcanzado con éxito!")
+        
         self.esperando_meta = False
         self.proximo_punto()
 
     def revisar_progreso(self):
-        # IMPORTANTE: Solo checar si estamos esperando activamente
         if not self.esperando_meta or self.inicio_tiempo_punto is None:
             return
             
         transcurrido = self.get_clock().now() - self.inicio_tiempo_punto
         
-        # 45 segundos de tiempo máximo
         if transcurrido > Duration(seconds=45):
-            self.get_logger().warn(f"TIMEOUT. Saltando punto {self.punto_actual+1}")
+            self.get_logger().warn(f"¡TIMEOUT! El punto {self.punto_actual+1} falló. Intentando el siguiente...")
             
-            # BLOQUEO INMEDIATO para evitar que get_result_callback se ejecute
+            # BLOQUEO DE SEGURIDAD: Al poner esto en False, 
+            # get_result_callback ya no podrá disparar el siguiente punto.
             self.esperando_meta = False 
             self.inicio_tiempo_punto = None
             
-            # Cancelar en Nav2 si hay un handle
             if self.goal_handle is not None:
                 self.goal_handle.cancel_goal_async()
             
+            # Forzamos una pequeña espera antes de proximo_punto para limpiar el buffer
             self.proximo_punto()
 
     def proximo_punto(self):
         self.punto_actual += 1
-        # Pequeña pausa real para que los hilos de ROS se sincronicen
-        time.sleep(0.2) 
+        # Esta pequeña pausa de 0.5s es vital para que Nav2 termine de cancelar
+        # la meta anterior antes de recibir la nueva.
+        time.sleep(0.5) 
         self.ir_al_siguiente_punto()
 
 def main(args=None):
