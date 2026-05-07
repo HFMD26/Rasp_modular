@@ -12,7 +12,7 @@ def generate_launch_description():
     ldlidar_dir = get_package_share_directory('ldlidar_stl_ros2')
     
     # Ruta del mapa que guardaste anteriormente
-    map_file = os.path.join(pkg_modula, 'maps', 'mapa_proyecto.yaml')
+    map_file = os.path.join(pkg_modula, 'maps', 'mapa_simulacion.yaml')
 
     return LaunchDescription([
         
