@@ -28,6 +28,7 @@ setup(
         'console_scripts': [
             'master_controller = proyecto_modula.master_controller:main',
             'movimiento_aspirador = proyecto_modula.movimiento_aspirador:main',
+            'linea_recta = proyecto_modula.linea_recta:main',
         ],
     },
 ) # <--- ESTE PARÉNTESIS ES VITAL
