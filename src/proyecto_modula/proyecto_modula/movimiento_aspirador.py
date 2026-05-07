@@ -150,7 +150,8 @@ class CortadorSeguro(Node):
             
         x, y, yaw = self.rutas[self.punto_actual]
         
-        # Reiniciar el reloj de timeout para el nuevo punto
+        # --- NUEVO: Control de estado para evitar cascada ---
+        self.esperando_meta = True 
         self.inicio_tiempo_punto = self.get_clock().now()
         
         goal_msg = NavigateToPose.Goal()
@@ -165,21 +166,33 @@ class CortadorSeguro(Node):
         send_goal_future = self.nav_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
 
-    def goal_response_callback(self, future):
-        self.goal_handle = future.result()
-        if not self.goal_handle.accepted:
-            self.get_logger().error("Meta rechazada por Nav2.")
-            self.proximo_punto()
+    def revisar_progreso(self):
+        if self.inicio_tiempo_punto is None or not self.esperando_meta:
             return
-        self.goal_handle.get_result_async().add_done_callback(self.get_result_callback)
+            
+        tiempo_transcurrido = self.get_clock().now() - self.inicio_tiempo_punto
+        if tiempo_transcurrido > Duration(seconds=45): # Bajamos a 45s para que sea más dinámico
+            self.get_logger().warn("¡TIMEOUT! Saltando punto por tiempo...")
+            
+            # Cambiamos el estado ANTES de saltar para romper la cascada
+            self.esperando_meta = False 
+            
+            if self.goal_handle:
+                self.nav_client.cancel_goal_async(self.goal_handle)
+            
+            self.proximo_punto()
 
     def get_result_callback(self, future):
-        # Si llegamos aquí, Nav2 terminó (con éxito o fallo)
-        self.proximo_punto()
+        # Solo avanzamos si el timeout no lo hizo primero
+        if self.esperando_meta:
+            self.esperando_meta = False
+            self.proximo_punto()
 
     def proximo_punto(self):
-        # Pequeña pausa para estabilizar
+        # Limpiamos el handle de la meta anterior
+        self.goal_handle = None
         self.punto_actual += 1
+        # Pequeña pausa de 0.5s para que la terminal no se sature
         self.ir_al_siguiente_punto()
 
 def main(args=None):
