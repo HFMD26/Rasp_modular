@@ -20,12 +20,13 @@ def euler_a_quaternion(yaw):
 class CortadorSeguro(Node):
     def __init__(self):
         super().__init__('cerebro_cortador_final')
-        
-        # --- CONFIGURACIÓN ---
         self.margen_seguridad = 0.55
         self.ancho_corte = 0.40
         self.paso_puntos = 0.60
-        self.tiempo_limite = 30.0  # <--- TUS 30 SEGUNDOS
+        
+        # --- CONFIGURACIÓN DE TIEMPOS ---
+        self.tiempo_limite_segundos = 30.0  # El robot tiene 30s para moverse
+        self.pausa_entre_puntos = 2.0      # El robot espera 2s antes de pedir el siguiente
         
         self.map_msg = None
         self.rutas = []
@@ -36,15 +37,11 @@ class CortadorSeguro(Node):
         self.limpiando_sistema = False 
         
         self.nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-
-        qos_map = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, 
-                             durability=DurabilityPolicy.TRANSIENT_LOCAL, depth=1)
-        self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, qos_map)
+        # ... (suscripción al mapa igual)
         
-        # Watchdog: Revisa el cronómetro cada segundo
+        # Revisa el progreso cada 1 segundo para ser precisos
         self.timer_revision = self.create_timer(1.0, self.revisar_progreso)
-        self.get_logger().info("Iniciando con 30s por punto y protección anti-Estatus 6.")
-
+        
     def map_callback(self, msg):
         if self.map_msg is not None: return
         self.map_msg = msg
@@ -100,8 +97,10 @@ class CortadorSeguro(Node):
             return
 
         x, y, yaw = self.rutas[self.punto_actual]
-        self.esperando_meta = True 
+        
+        # IMPORTANTE: Guardamos el tiempo exacto de inicio
         self.inicio_tiempo_punto = self.get_clock().now() 
+        self.esperando_meta = True 
         
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.frame_id = 'map'
@@ -110,7 +109,7 @@ class CortadorSeguro(Node):
         goal_msg.pose.pose.position.y = float(y)
         goal_msg.pose.pose.orientation = euler_a_quaternion(yaw)
         
-        self.get_logger().info(f"==> Iniciando Punto {self.punto_actual+1}/{len(self.rutas)} (30s de tiempo límite)")
+        self.get_logger().info(f"==> PUNTO {self.punto_actual+1}: Tienes {self.tiempo_limite_segundos}s para llegar.")
         
         send_goal_future = self.nav_client.send_goal_async(goal_msg)
         send_goal_future.add_done_callback(self.goal_response_callback)
@@ -130,24 +129,35 @@ class CortadorSeguro(Node):
         self.proximo_punto()
 
     def revisar_progreso(self):
+        # Si no hay meta activa, no hacemos nada
         if not self.esperando_meta or self.inicio_tiempo_punto is None:
             return
             
-        transcurrido = self.get_clock().now() - self.inicio_tiempo_punto
+        # Calculamos cuánto tiempo ha pasado realmente
+        ahora = self.get_clock().now()
+        duracion_pasada = ahora - self.inicio_tiempo_punto
+        segundos_pasados = duracion_pasada.nanoseconds / 1e9 # Convertir a segundos
         
-        if transcurrido > Duration(seconds=int(self.tiempo_limite)):
-            self.get_logger().warn(f"TIMEOUT: {self.tiempo_limite}s agotados en Punto {self.punto_actual+1}. Saltando...")
+        # Log cada segundo para que veas el conteo en la terminal
+        self.get_logger().info(f"Progreso punto {self.punto_actual+1}: {segundos_pasados:.1f}s / {self.tiempo_limite_segundos}s", once=False)
+
+        # SI PASAN LOS 30 SEGUNDOS, CANCELAMOS
+        if segundos_pasados >= self.tiempo_limite_segundos:
+            self.get_logger().warn(f"¡TIEMPO AGOTADO! No llegó en {self.tiempo_limite_segundos}s.")
+            
             self.esperando_meta = False 
             if self.goal_handle:
                 self.goal_handle.cancel_goal_async()
+            
             self.proximo_punto()
 
     def proximo_punto(self):
         self.limpiando_sistema = True
         self.punto_actual += 1
         self.goal_handle = None
-        # Pausa obligatoria para evitar el Estatus 6 (CANCELLED)
-        self.timer_pausa = self.create_timer(2.0, self.espera_y_continua)
+        # Esta es la pausa técnica para que Nav2 no de error Status 6
+        self.get_logger().info(f"Limpiando sistema... esperando {self.pausa_entre_puntos}s")
+        self.timer_pausa = self.create_timer(self.pausa_entre_puntos, self.espera_y_continua)
 
     def espera_y_continua(self):
         self.timer_pausa.cancel()
